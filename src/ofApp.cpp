@@ -29,6 +29,9 @@ void ofApp::setup() {
 		controls[a] = 0.0;
 		updateParameter(a);
 	}
+	length = 300.0;
+	feedbackIncrement = 1.0 / (length * (float)sampleRate);
+	feedbackPhasor = 0.0;
 }
 
 //--------------------------------------------------------------
@@ -48,7 +51,7 @@ void ofApp::draw() {
 
 //--------------------------------------------------------------
 void ofApp::exit() {
-
+	ofSoundStreamClose();
 }
 
 
@@ -89,10 +92,17 @@ void ofApp::audioSetup() {
 	nyquist = (float)sampleRate * 0.5;
 	startPan = sqrt(0.5);
 	minimumDouble = std::numeric_limits<double>::min();
+	dutyATotal = minimumDouble;
+	dutyBTotal = minimumDouble;
+	dutyCTotal = minimumDouble;
+	frequencyATotal = minimumDouble;
+	frequencyBTotal = minimumDouble;
+	frequencyCTotal = minimumDouble;
 	sampleATotal = minimumDouble;
 	sampleBTotal = minimumDouble;
 	sampleCTotal = minimumDouble;
 	samplesElapsed = 0.0;
+	sample = { 0.0, 0.0 };
 }
 
 void ofApp::midiSetup() {
@@ -123,7 +133,7 @@ void ofApp::updateParameter(int control) {
 		}
 	}
 	else {
-		parameters[control] = (controls[control] + 63.5) / 127.0;
+		parameters[control] = unipolarControl(control);
 	}
 }
 
@@ -131,23 +141,47 @@ float ofApp::normalizeMidi(int control) {
 	return pow(controls[control] / 64.0, 3.0);
 }
 
+float ofApp::unipolarControl(int control) {
+	return controls[control] + 64.5 / 128.0;
+}
+
 void ofApp::getSample() {
 	samplesElapsed++;
+	feedbackPhasor += feedbackIncrement;
+	if (feedbackPhasor >= 1.0) {
+		ofExit();
+	}
+	feedback = pow(feedbackPhasor, 0.5);
+	dutyA = getDuty(1, 11, 13, sampleB, sampleC);
+	dutyB = getDuty(2, 9, 14, sampleA, sampleC);
+	dutyC = getDuty(3, 10, 12, sampleA, sampleC);
+	frequencyA = getFrequency(4, 19, 21, sampleB, sampleC);
+	frequencyB = getFrequency(5, 17, 22, sampleA, sampleC);
+	frequencyC = getFrequency(6, 18, 20, sampleA, sampleB);
+	amplitudeA = getAmplitude(7, 27, 29, sampleB, sampleC);
+	amplitudeB = getAmplitude(8, 25, 30, sampleA, sampleC);
+	amplitudeC = getAmplitude(0, 26, 28, sampleA, sampleC);
 	panA[0] = getPan(15, 16, sampleB, sampleC);
 	panB[1] = 1.0 - panA[0];
 	panB[0] = getPan(23, 24, sampleA, sampleC);
 	panB[1] = 1.0 - panB[0];
 	panC[0] = getPan(31, 32, sampleB, sampleC);
 	panC[1] = 1.0 - panC[0];
-	oscillatorA.setDuty(getDuty(1, 11, 13, sampleB, sampleC));
-	oscillatorA.setFreq(getFrequency(4, 19, 21, sampleB, sampleC));
-	oscillatorA.setAmp(getAmplitude(7, 27, 29, sampleB, sampleC));
-	oscillatorB.setDuty(getDuty(2, 9, 14, sampleA, sampleC));
-	oscillatorB.setFreq(getFrequency(5, 17, 22, sampleA, sampleC));
-	oscillatorB.setAmp(getAmplitude(8, 25, 30, sampleA, sampleC));
-	oscillatorC.setDuty(getDuty(3, 10, 12, sampleA, sampleC));
-	oscillatorC.setFreq(getFrequency(6, 18, 20, sampleA, sampleB));
-	oscillatorC.setAmp(getAmplitude(0, 26, 28, sampleA, sampleC));
+	oscillatorA.setDuty(dutyA);
+	oscillatorA.setFreq(frequencyA);
+	oscillatorA.setAmp(amplitudeA);
+	oscillatorB.setDuty(dutyB);
+	oscillatorB.setFreq(frequencyB);
+	oscillatorB.setAmp(amplitudeB);
+	oscillatorC.setDuty(dutyC);
+	oscillatorC.setFreq(frequencyC);
+	oscillatorC.setAmp(amplitudeC);
+	dutyATotal += dutyA;
+	dutyBTotal += dutyB;
+	dutyCTotal += dutyC;
+	frequencyATotal += pow(frequencyA / nyquist, 0.5);
+	frequencyBTotal += pow(frequencyB / nyquist, 0.5);
+	frequencyCTotal += pow(frequencyC / nyquist, 0.5);
 	sampleA = oscillatorA.getSample();
 	sampleB = oscillatorB.getSample();
 	sampleC = oscillatorC.getSample();
@@ -155,7 +189,8 @@ void ofApp::getSample() {
 	sampleBTotal += sampleB;
 	sampleCTotal += sampleC;
 	for (int a = 0; a < 2; a++) {
-		sample[a] = mix3(sampleA * panA[a] / startPan, sampleB * panB[a] / startPan, sampleC * panC[a] / startPan);
+		lastSample[a] = sample[a];
+		sample[a] = (lastSample[a] * feedback) + (mix3(sampleA * panA[a] / startPan, sampleB * panB[a] / startPan, sampleC * panC[a] / startPan) * (1.0 - feedback));
 	}
 }
 
@@ -191,10 +226,38 @@ inline float ofApp::mix3(float a, float b, float c) {
 
 void ofApp::setUniforms() {
 	shader.setUniform2f("window", window);
-	rgb.set(getColor(sampleATotal), getColor(sampleBTotal), getColor(sampleCTotal));
-	shader.setUniform3f("rgb", rgb);
+	xTranslate.set(getXY(dutyATotal), getXY(dutyBTotal), getXY(dutyCTotal));
+	yTranslate.set(getXY(frequencyATotal), getXY(frequencyBTotal), getXY(frequencyCTotal));
+	zTranslate.set(getZ(sampleATotal), getZ(sampleBTotal), getZ(sampleCTotal));
+	shader.setUniform3f("xTranslate", xTranslate);
+	shader.setUniform3f("yTranslate", yTranslate);
+	shader.setUniform3f("zTranslate", zTranslate);
+	shader.setUniform3f("xDuty", getVec(9));
+	shader.setUniform3f("yDuty", getVec(10));
+	shader.setUniform3f("xFrequency", getVec(11));
+	shader.setUniform3f("yFrequency", getVec(12));
+	shader.setUniform3f("xAmplitude", getVec(13));
+	shader.setUniform3f("yAmplitude", getVec(14));
+	shader.setUniform3f("xPan", getPanVec(15));
+	shader.setUniform3f("yPan", getPanVec(16));
 }
 
-double ofApp::getColor(double sampleTotal) {
-	return (sampleTotal + 1.0) / (2.0 * samplesElapsed);
+float ofApp::getXY(double total) {
+	return (float)((total * 2.0 / samplesElapsed) - 1.0);
+}
+
+float ofApp::getZ(double sampleTotal) {
+	return (float)pow(((sampleTotal + 1.0) / (samplesElapsed)), 2.0);
+}
+
+ofVec3f ofApp::getVec(int control) {
+	ofVec3f vec;
+	vec.set(unipolarControl(control), unipolarControl(control + 8), unipolarControl(control + 16));
+	return vec;
+}
+
+ofVec3f ofApp::getPanVec(int control) {
+	ofVec3f vec;
+	vec.set(parameters[control], parameters[control + 8], parameters[control + 16]);
+	return vec;
 }
